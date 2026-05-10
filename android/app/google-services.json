@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "389851532409",
+    "project_id": "smart-trash-bin-8ecad",
+    "storage_bucket": "smart-trash-bin-8ecad.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:389851532409:android:476c6ebc487d80d57c58a8",
+        "android_client_info": {
+          "package_name": "com.smart_trash_bin.smart_trash_bin"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBxZnDZdGUXdSvsAKBH8A_tpWb9mvYd42Q"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
