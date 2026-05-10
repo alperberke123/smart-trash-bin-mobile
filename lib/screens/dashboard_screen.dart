@@ -1,6 +1,8 @@
+import 'dart:async'; // Timer için eklendi
 import 'package:flutter/material.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart'; // Bildirim paketi
 import '../models/trash_reading.dart';
-import '../services/api_service.dart'; // Yeni yazdığımız servisi ekledik
+import '../services/api_service.dart';
 import 'stats_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
@@ -19,32 +21,97 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final Color _successColor = const Color(0xFF4CAF50);
   final Color _alertColor = const Color(0xFFE53935);
 
-  // --- CANLI VERİ YÖNETİMİ ---
-  TrashReading? _currentData; // API'den gelecek veriyi burada tutacağız
-  bool _isLoading = true; // Ekran ilk açıldığında yükleniyor durumunda başlar
+  // --- CANLI VERİ VE BİLDİRİM YÖNETİMİ ---
+  TrashReading? _currentData;
+  bool _isLoading = true;
+
+  // Bildirim değişkenleri
+  final FlutterLocalNotificationsPlugin _notificationsPlugin = FlutterLocalNotificationsPlugin();
+  bool _notificationSent = false;
+  Timer? _pollingTimer;
 
   @override
   void initState() {
     super.initState();
-    _fetchData(); // Ekran açılır açılmaz verileri çekme işlemini başlat
+    _initializeNotifications(); // Bildirim altyapısını hazırla
+    _fetchData(); // İlk veriyi çek
+    _startPolling(); // Otomatik yenilemeyi başlat
   }
 
-  // API'den veriyi çeken fonksiyon
-  Future<void> _fetchData() async {
-    setState(() {
-      _isLoading = true; // Yükleme animasyonunu başlat
-    });
+  @override
+  void dispose() {
+    _pollingTimer?.cancel(); // Sayfa kapanırsa timer'ı durdur (Hafıza sızıntısını önler)
+    super.dispose();
+  }
 
-    // Servisimize gidip Vercel'den veriyi istiyoruz
-    final data = await ApiService.getLatestReading();
+  // --- 1. BİLDİRİM KURULUMU ---
+  Future<void> _initializeNotifications() async {
+    const AndroidInitializationSettings androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
+    const InitializationSettings initSettings = InitializationSettings(android: androidSettings);
+    await _notificationsPlugin.initialize(settings: initSettings);
 
-    setState(() {
-      _currentData = data; // Gelen veriyi değişkenimize kaydet
-      _isLoading = false; // Yükleme animasyonunu durdur
+    // Android 13+ için izin isteme penceresi
+    await _notificationsPlugin.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()?.requestNotificationsPermission();
+  }
+
+  // --- 2. OTOMATİK KONTROL (POLLING) ---
+  void _startPolling() {
+    // Uygulama açık kaldığı sürece her 10 saniyede bir veriyi gizlice günceller
+    _pollingTimer = Timer.periodic(const Duration(seconds: 10), (timer) {
+      _fetchData(isBackground: true);
     });
   }
 
-  // Veri gelmediyse veya null ise arayüz çökmesin diye güvenli değerler (Fallback)
+  // --- 3. VERİ ÇEKME VE BİLDİRİM KONTROLÜ (SENİN FONKSİYONUN MODİFİYE HALİ) ---
+  Future<void> _fetchData({bool isBackground = false}) async {
+    // Sadece manuel yenilemelerde loading animasyonu göster
+    if (!isBackground) {
+      setState(() { _isLoading = true; });
+    }
+
+    try {
+      final data = await ApiService.getLatestReading();
+
+      setState(() {
+        _currentData = data;
+        _isLoading = false;
+      });
+
+      // BİLDİRİM MANTIĞI BURADA ÇALIŞIYOR
+      int guncelDoluluk = _currentData?.fillPercent.toInt() ?? 0;
+
+      if (guncelDoluluk >= 80 && !_notificationSent) {
+        _showLocalNotification(guncelDoluluk);
+        _notificationSent = true; // Bildirimi kilitledik
+      } else if (guncelDoluluk < 20) {
+        _notificationSent = false; // Çöp boşaldı, kilidi açtık
+      }
+
+    } catch (e) {
+      debugPrint("Veri çekme hatası: $e");
+      setState(() { _isLoading = false; });
+    }
+  }
+
+  // --- 4. BİLDİRİMİ EKRANA DÜŞÜRME ---
+  Future<void> _showLocalNotification(int oran) async {
+    const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
+      'trash_bin_channel',
+      'Çöp Kutusu Uyarıları',
+      importance: Importance.max,
+      priority: Priority.high,
+    );
+    const NotificationDetails platformDetails = NotificationDetails(android: androidDetails);
+
+    await _notificationsPlugin.show(
+      id: 0,
+      title: 'Kutu Doldu!',
+      body: 'Çöp kutusu %$oran doluluğa ulaştı. Lütfen boşaltın.',
+      notificationDetails: platformDetails,
+    );
+  }
+
+  // Güvenli değerler (Fallback)
   int get fillPercent => _currentData?.fillPercent.toInt() ?? 0;
   double get airQualityRaw => _currentData?.gasRaw ?? 0.0;
   int get distanceCm => _currentData?.distanceCm.toInt() ?? 0;
@@ -55,15 +122,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return Scaffold(
       backgroundColor: _bgColor,
       body: SafeArea(
-        // Eğer veriler hala yükleniyorsa, ekranda dönen bir çark göster
-        child: _isLoading
+        child: _isLoading && _currentData == null
             ? Center(child: CircularProgressIndicator(color: _successColor))
             : RefreshIndicator(
-          // Ekranı aşağı kaydırınca verileri yenileme özelliği (Pull-to-refresh)
-          onRefresh: _fetchData,
+          onRefresh: () => _fetchData(isBackground: false),
           color: _successColor,
           child: SingleChildScrollView(
-            physics: const AlwaysScrollableScrollPhysics(), // Kaydırma hep aktif olsun (Yenileme için)
+            physics: const AlwaysScrollableScrollPhysics(),
             padding: const EdgeInsets.all(20.0),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -76,7 +141,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ),
                 const SizedBox(height: 35),
 
-                // Eğer API bağlantısında sorun olursa veya veri yoksa kullanıcıya uyarı göster
                 if (_currentData == null)
                   Container(
                     padding: const EdgeInsets.all(15),
@@ -102,44 +166,35 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   style: TextStyle(color: _subTextColor, fontWeight: FontWeight.bold, letterSpacing: 1.2),
                 ),
                 const SizedBox(height: 15),
-      // --- GÜNLÜK VERİM BÖLÜMÜ ---
-      Text(
-        'GÜNLÜK VERİM',
-        style: TextStyle(color: _subTextColor, fontWeight: FontWeight.bold, letterSpacing: 1.2),
-      ),
-      const SizedBox(height: 15),
-
-      // Tıklanabilir Kart (GestureDetector)
-      GestureDetector(
-        onTap: () {
-          // Tıklandığında StatsScreen (İstatistik) sayfasına geçiş yap
-          Navigator.push(
-            context,
-            MaterialPageRoute(builder: (context) => const StatsScreen()),
-          );
-        },
-        child: Container(
-          height: 150,
-          width: double.infinity, // Kartı ekranın sağına ve soluna tam yayar
-          decoration: _buildCardDecoration(),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.stacked_line_chart, color: _successColor, size: 48),
-              const SizedBox(height: 15),
-              Text(
-                'Detaylı Grafikleri Görüntüle',
-                style: TextStyle(color: _textColor, fontSize: 16, fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 5),
-              Text(
-                'Geçmiş kullanımları analiz et',
-                style: TextStyle(color: _subTextColor, fontSize: 12),
-              ),
-            ],
-          ),
-        ),
-      ),
+                GestureDetector(
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (context) => const StatsScreen()),
+                    );
+                  },
+                  child: Container(
+                    height: 150,
+                    width: double.infinity,
+                    decoration: _buildCardDecoration(),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.stacked_line_chart, color: _successColor, size: 48),
+                        const SizedBox(height: 15),
+                        Text(
+                          'Detaylı Grafikleri Görüntüle',
+                          style: TextStyle(color: _textColor, fontSize: 16, fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 5),
+                        Text(
+                          'Geçmiş kullanımları analiz et',
+                          style: TextStyle(color: _subTextColor, fontSize: 12),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
               ],
             ),
           ),
@@ -155,8 +210,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         const SizedBox(),
         Row(
           children: [
-            // Verileri yenileme butonu
-            _buildIconButton(Icons.refresh, onPressed: _fetchData),
+            _buildIconButton(Icons.refresh, onPressed: () => _fetchData(isBackground: false)),
             const SizedBox(width: 15),
             _buildIconButton(Icons.person_outline, onPressed: (){}),
           ],
@@ -198,7 +252,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
         const SizedBox(height: 15),
         Row(
           children: [
-            // Gecikme süresi sensörden gelmediği için şimdilik sabit bir arayüz bıraktık
             Expanded(child: _buildMetricCard(Icons.access_time, 'Canlı', 'DURUM', 'Senkronizasyon', false)),
             const Expanded(child: SizedBox()),
           ],
